@@ -14,7 +14,21 @@ library(ggplot2)
 library(reshape)
 library(pastecs)
 library(gmodels)
+library(MASS)
 # library(here)
+
+logisticPseudoR2s <- function(LogModel) {
+  dev <- LogModel$deviance 
+  nullDev <- LogModel$null.deviance 
+  modelN <-  length(LogModel$fitted.values)
+  R.l <-  1 -  dev / nullDev
+  R.cs <- 1- exp ( -(nullDev - dev) / modelN)
+  R.n <- R.cs / ( 1 - ( exp (-(nullDev / modelN))))
+  cat("Pseudo R^2 for logistic regression\n")
+  cat("Hosmer and Lemeshow R^2  ", round(R.l, 3), "\n")
+  cat("Cox and Snell R^2        ", round(R.cs, 3), "\n")
+  cat("Nagelkerke R^2           ", round(R.n, 3),    "\n")
+}
 ```
 
 Link to the data set: https://www.kaggle.com/mdabbert/ultimate-ufc-dataset?select=ufc-master.csv
@@ -26,6 +40,14 @@ df <- read.csv('ufc-master.csv')
 # names(df)
 # summary(df)
 ```
+
+## Questions:
+ - Inquiry 1: What is the appropriate analysis to confirm that the color advantage is signficant?
+ - Inquiry 2: Check the understanding: The effect of reach is statistically significant, but it is a small effect. Also, what is the interpretation of the coefficient for AbsDiff?
+ - Inquiry 3: Check the understanding: Height appears to have no real advantage at all.
+ - Inquiry 4: Check the understanding: There is no effect to combining height and reach together.
+ - Inquiry 5: The understanding of the model starts to fall apart after running the saturated model. Removing the three-way interaction term has a p value of 1, which means that this term can be removed? And then the same for the two-way interactions
+ - Inquiry 6: Questions similar to Inquiry 2. It looks like age difference is statistically significant, but it's a small effect?
 
 # Inquiry 1: Does one color have an advantage over the other? Does gender make a difference?
 
@@ -87,8 +109,6 @@ print(paste('Overall Female Blue Win Pct: ',
 
 ```
 
-I'm not sure what test to run here to show that color is significant.
-
 # Inquiry 2: Does a reach advantage lead to more wins?
 
 ```{r reach_analysis}
@@ -143,9 +163,13 @@ reach.model <- glm(AdWin ~ AbsDiff, data = reach, family = binomial())
 # Display summary
 summary(reach.model)
 
-```
+# Calculate R^2
 
-There is a statistically significant correlation between the winner and having a reach advantage. (Note: Need to determine how to interpret the 0.02 coefficient. Is that a 2% increase in winning percentage per 1 cm of reach? That seems like a lot.)
+logisticPseudoR2s(reach.model)
+
+
+
+```
 
 ## Check to see how gender affects this
 
@@ -216,6 +240,9 @@ height.model <- glm(AdWin ~ AbsDiff, data = height, family = binomial())
 # Display summary
 summary(height.model)
 
+# Calculate R^2
+logisticPseudoR2s(height.model)
+
 ```
 
 There is no significant advantage.
@@ -280,26 +307,65 @@ stance <- df[,c('Winner', 'B_Stance', 'R_Stance')]
 # Only keep matches where the stances are different
 stance <- subset(stance, !(B_Stance == R_Stance))
 
+# Eliminate matches with open stances since there aren't enough of them
+stance <- subset(stance, !(B_Stance == 'Open Stance'))
+stance <- subset(stance, !(R_Stance == 'Open Stance'))
+
+# Treat as factors
+stance$B_Stance <- as.factor(stance$B_Stance)
+stance$R_Stance <- as.factor(stance$R_Stance)
+stance$Winner <- as.factor(stance$Winner)
+
+### Loglinear Analysis
+
+# Create multiple data frames relative to blue's stance
+B_Ortho <- subset(stance, B_Stance == 'Orthodox')
+B_South <- subset(stance, B_Stance == 'Southpaw')
+B_Switch <- subset(stance, B_Stance == 'Switch')
+
+# Show cross tables
+CrossTable(B_Ortho$R_Stance, B_Ortho$Winner, sresid = TRUE, prop.t = FALSE, prop.c = FALSE, prop.chisq = FALSE, format = 'SPSS')
+CrossTable(B_South$R_Stance, B_South$Winner, sresid = TRUE, prop.t = FALSE, prop.c = FALSE, prop.chisq = FALSE, format = 'SPSS')
+CrossTable(B_Switch$R_Stance, B_Switch$Winner, sresid = TRUE, prop.t = FALSE, prop.c = FALSE, prop.chisq = FALSE, format = 'SPSS')
+
+# Create the contingency table
+FullContingencyTable <- xtabs(~ R_Stance + B_Stance + Winner, data = stance)
+
+# Create the saturated model
+saturated.model <- loglm(~ R_Stance * B_Stance * Winner, data = FullContingencyTable)
+
+print('Saturated Model')
+summary(saturated.model)
+
+# Remove 3-way interaction
+
+print('Remove 3-way term')
+
+threeWay <- update(saturated.model, .~. - R_Stance:B_Stance:Winner)
+summary(threeWay)
+anova(saturated.model, threeWay)
+
+# The model without the three way interactions seems to be a good fit still
+# Start removing 2-way interaction
+
+R_B.model <- update(threeWay, .~. - R_Stance:B_Stance)
+R_Win.model <- update(threeWay, .~. - R_Stance:Winner)
+B_Win.model <- update(threeWay, .~. - B_Stance:Winner)
+
+print('Remove Red/Blue Stance interaction')
+anova(threeWay, R_B.model)
+
+
+print('Remove Red Stance/Winner interaction')
+anova(threeWay, R_Win.model)
+
+print('Remove Blue Stance/Winner interaction')
+anova(threeWay, B_Win.model)
+
 ```
-
-```{r}
-# Height, Weight, Age, Experience (# of matches), Wins, Stance
-
-
-ggplot(df, aes(x = gender, fill = Winner)) +
-  geom_bar()
-```
-```{r}
-df %>%
-  select(gender, Winner) %>%
-  dplyr::summarise(`% Win` = n())
-```
-
 
 
 # Inquiry 6: Does a younger age lead to more wins?
-
-# Inquiry #: Does a younger age lead to more wins?
 
 ```{r age_analysis}
 # Create a smaller data frame
@@ -334,5 +400,9 @@ age.hist +
 age.model <- glm(AdWin ~ AbsDiff, data = age, family = binomial())
 # Display summary
 summary(age.model)
+
+# Calculate R^2
+logisticPseudoR2s(reach.model)
 ```
+
 There is a statistically significant correlation between the winner and having an age advantage (younger age).
